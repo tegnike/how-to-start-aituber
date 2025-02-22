@@ -802,26 +802,39 @@
             const parameters = response.data.defaultParameters;
             console.log('すべてのパラメータ名:', parameters.map(p => p.name));
             
-            // 口に関連するパラメータを探す
-            const mouthParameters = parameters.filter(param => {
-              const name = param.name.toLowerCase();
-              const isMouthParam = 
-                name.includes('mouth') || 
-                name.includes('口') ||
-                name.includes('param_mouth') ||
-                name.includes('parammouthopen') ||
-                name.includes('openness');
-              
-              if (isMouthParam) {
-                console.log('見つかった口パラメータ:', param);
-              }
-              return isMouthParam;
-            });
+            // 口の開きに関連するパラメータを取得
+            const mouthParams = parameters
+              .filter(param => {
+                const name = param.name.toLowerCase();
+                
+                // 目に関連するパラメータを除外
+                if (name.includes('eye') || name.includes('目')) {
+                  return false;
+                }
+
+                // より厳密な口パラメータの検索条件
+                const mouthPatterns = [
+                  'mouth_open',      // 一般的な口開きパラメータ
+                  'mouth.open',      // ドット区切り
+                  'mouth_openness',  // 開度パラメータ
+                  'parammouth',      // VTSの標準的な命名
+                  'mouthopen',       // キャメルケース
+                  '口開き',          // 日本語
+                  '口の開き',        // 日本語バリエーション
+                  'あ口',           // 母音Aの口形
+                  'mouth_a',        // 母音A（英語）
+                ];
+
+                return mouthPatterns.some(pattern => name.includes(pattern));
+              })
+              .map(param => param.name);
             
-            if (mouthParameters.length === 0) {
-              console.warn('口に関連するパラメータが見つかりません');
+            // パラメータが見つからない場合は警告を表示
+            if (mouthParams.length === 0) {
+              console.warn('口の開閉に関連するパラメータが見つかりませんでした。以下の全パラメータ名を確認してください:');
+              console.warn(parameters.map(p => p.name));
             } else {
-              console.log('使用する口パラメータ:', mouthParameters);
+              console.log('使用する口パラメータ:', mouthParams);
             }
             
             window.vtsParameters = parameters;
@@ -995,37 +1008,40 @@
       const interval = 100; // 100ms間隔で更新
       const samplesPerInterval = Math.floor(audioBuffer.sampleRate * (interval / 1000));
       
-      // 母音パラメータの準備
-      const voiceParams = {
-        'a': window.vtsParameters.find(p => p.name === 'VoiceA')?.name,
-        'i': window.vtsParameters.find(p => p.name === 'VoiceI')?.name,
-        'u': window.vtsParameters.find(p => p.name === 'VoiceU')?.name,
-        'e': window.vtsParameters.find(p => p.name === 'VoiceE')?.name,
-        'o': window.vtsParameters.find(p => p.name === 'VoiceO')?.name
-      };
-
-      // 一般的な口の開きパラメータも取得
+      // 口の開きに関連するパラメータを取得
       const mouthParams = window.vtsParameters
         .filter(param => {
           const name = param.name.toLowerCase();
-          return (name.includes('mouth') || name.includes('口')) && 
-                 !name.includes('voice'); // 母音パラメータは除外
+          
+          // 目に関連するパラメータを除外
+          if (name.includes('eye') || name.includes('目')) {
+            return false;
+          }
+
+          // より厳密な口パラメータの検索条件
+          const mouthPatterns = [
+            'mouth_open',      // 一般的な口開きパラメータ
+            'mouth.open',      // ドット区切り
+            'mouth_openness',  // 開度パラメータ
+            'parammouth',      // VTSの標準的な命名
+            'mouthopen',       // キャメルケース
+            '口開き',          // 日本語
+            '口の開き',        // 日本語バリエーション
+            'あ口',           // 母音Aの口形
+            'mouth_a',        // 母音A（英語）
+          ];
+
+          return mouthPatterns.some(pattern => name.includes(pattern));
         })
         .map(param => param.name);
       
-      console.log('使用する母音パラメータ:', voiceParams);
-      console.log('使用する口パラメータ:', mouthParams);
-      
-      // 音声分析用のAnalyserNodeを作成
-      const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 2048;
-      
-      // 音声データをバッファに入れる（再生はしない）
-      const source = audioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(analyser);
-      
-      const frequencyData = new Float32Array(analyser.frequencyBinCount);
+      // パラメータが見つからない場合は警告を表示
+      if (mouthParams.length === 0) {
+        console.warn('口の開閉に関連するパラメータが見つかりませんでした。以下の全パラメータ名を確認してください:');
+        console.warn(window.vtsParameters.map(p => p.name));
+      } else {
+        console.log('使用する口パラメータ:', mouthParams);
+      }
       
       // レスポンスハンドラを設定
       const originalOnMessage = vtsWebSocket.onmessage;
@@ -1037,8 +1053,6 @@
       vtsWebSocket.onmessage = messageHandler;
       
       try {
-        source.start(0);
-        
         for (let i = 0; i < channelData.length; i += samplesPerInterval) {
           // 音量の計算
           let sum = 0;
@@ -1046,35 +1060,14 @@
             sum += Math.abs(channelData[i + j]);
           }
           const volume = sum / samplesPerInterval;
-          const baseValue = Math.min(Math.max(volume * 8, 0), 1);
-          
-          // スペクトル分析で母音を推定
-          analyser.getFloatFrequencyData(frequencyData);
-          
-          // 簡易的な母音判定（周波数帯域による特徴で判定）
-          const formants = getFormants(frequencyData, audioContext.sampleRate);
-          const vowel = estimateVowel(formants);
+          const mouthOpenValue = Math.min(Math.max(volume * 8, 0), 1);
           
           // パラメータ値を設定
-          const parameterValues = [];
-          
-          // 基本の口の開きパラメータ
-          mouthParams.forEach(param => {
-            parameterValues.push({
-              id: param,
-              value: baseValue * 0.8 + 0.2,
-              weight: 1
-            });
-          });
-          
-          // 母音に応じたパラメータ
-          if (vowel && voiceParams[vowel]) {
-            parameterValues.push({
-              id: voiceParams[vowel],
-              value: baseValue,
-              weight: 1
-            });
-          }
+          const parameterValues = mouthParams.map(param => ({
+            id: param,
+            value: mouthOpenValue,
+            weight: 1
+          }));
           
           const request = {
             apiName: "VTubeStudioPublicAPI",
@@ -1088,67 +1081,9 @@
           await new Promise(resolve => setTimeout(resolve, interval));
         }
       } finally {
-        source.stop();
         vtsWebSocket.onmessage = originalOnMessage;
         console.log('リップシンク制御完了');
       }
-    }
-
-    // フォルマント周波数を取得
-    function getFormants(frequencyData, sampleRate) {
-      const binSize = sampleRate / (frequencyData.length * 2);
-      const peaks = [];
-      
-      // ピーク（フォルマント）を検出
-      for (let i = 1; i < frequencyData.length - 1; i++) {
-        if (frequencyData[i] > frequencyData[i-1] && 
-            frequencyData[i] > frequencyData[i+1] && 
-            frequencyData[i] > -60) {
-          peaks.push({
-            frequency: i * binSize,
-            amplitude: frequencyData[i]
-          });
-        }
-      }
-      
-      // 振幅順にソート
-      peaks.sort((a, b) => b.amplitude - a.amplitude);
-      
-      // 上位2つのフォルマントを返す
-      return peaks.slice(0, 2).map(p => p.frequency);
-    }
-
-    // フォルマント周波数から母音を推定
-    function estimateVowel(formants) {
-      if (formants.length < 2) return null;
-      
-      const [f1, f2] = formants;
-      
-      // 日本語の母音のフォルマント周波数の一般的な値（Hz）
-      const vowelFormants = {
-        'a': { f1: 850, f2: 1200 },
-        'i': { f1: 300, f2: 2200 },
-        'u': { f1: 300, f2: 1600 },
-        'e': { f1: 500, f2: 1800 },
-        'o': { f1: 500, f2: 800 }
-      };
-      
-      // 最も近い母音を見つける
-      let minDist = Infinity;
-      let closestVowel = null;
-      
-      for (const [vowel, target] of Object.entries(vowelFormants)) {
-        const dist = Math.sqrt(
-          Math.pow(f1 - target.f1, 2) + 
-          Math.pow(f2 - target.f2, 2)
-        );
-        if (dist < minDist) {
-          minDist = dist;
-          closestVowel = vowel;
-        }
-      }
-      
-      return closestVowel;
     }
   </script>
 </body>
