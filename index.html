@@ -316,6 +316,11 @@
     let processedMessageIds = new Map();
     let conversationHistory = [];
 
+    // VTubeStudio WebSocket接続の管理
+    let vtsWebSocket = null;
+    let vtsAuthenticated = false;
+    const VTS_WEBSOCKET_URL = 'ws://localhost:8001';
+
     // 初期値を設定
     function initializeSettings() {
       document.getElementById('youtubeApiKey').value = DEFAULT_SETTINGS.YOUTUBE_API_KEY;
@@ -334,7 +339,10 @@
     document.addEventListener('DOMContentLoaded', () => {
       initializeSettings();
       updateConversationDisplay();
-
+      
+      // VTubeStudioに接続
+      connectToVTS();
+      
       // イベントリスナーの設定
       document.getElementById('startButton').addEventListener('click', () => {
         if (isProcessing) return;
@@ -663,60 +671,6 @@
       }
     }
 
-    // VOICEVOXを利用してテキストを発話させる関数を修正
-    async function speakWithVoicevox(text) {
-      const settings = getSettings();
-      statusDiv.innerText = "VOICEVOXで発話中...";
-      clearError();
-      
-      try {
-        // 1. audio_query: 発話用クエリの取得
-        const queryResponse = await fetch(`${settings.VOICEVOX_ENDPOINT}/audio_query?text=${encodeURIComponent(text)}&speaker=${settings.VOICEVOX_SPEAKER}`, {
-          method: 'POST'
-        });
-        if (!queryResponse.ok) {
-          showError(
-            'VOICEVOX APIでエラーが発生しました。',
-            await queryResponse.text()
-          );
-          return;
-        }
-        const queryJson = await queryResponse.json();
-
-        // 2. synthesis: 音声合成の実行
-        const synthesisResponse = await fetch(`${settings.VOICEVOX_ENDPOINT}/synthesis?speaker=${settings.VOICEVOX_SPEAKER}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(queryJson)
-        });
-        if (!synthesisResponse.ok) {
-          showError(
-            'VOICEVOX APIでエラーが発生しました。',
-            await synthesisResponse.text()
-          );
-          return;
-        }
-        const audioData = await synthesisResponse.blob();
-        const audioUrl = URL.createObjectURL(audioData);
-        const audio = new Audio(audioUrl);
-
-        return new Promise(resolve => {
-          audio.onended = () => {
-            URL.revokeObjectURL(audioUrl);
-            resolve();
-          };
-          audio.play();
-        });
-      } catch (error) {
-        showError(
-          'VOICEVOX APIの呼び出しに失敗しました。',
-          error.toString()
-        );
-      }
-    }
-
     // 全体のフローを管理する関数を修正
     async function processNextComment() {
       if (!shouldContinue) return;
@@ -738,8 +692,8 @@
         const openaiResponse = await getOpenAIResponse(messageText);
         console.log("OpenAIからの返答:", openaiResponse);
 
-        // 音声発話が完了するまで待機
-        await speakWithVoicevox(openaiResponse);
+        // speakWithVoicevoxの代わりにgenerateVoiceAndLipSyncを使用
+        await generateVoiceAndLipSync(openaiResponse);
         
         // 音声発話完了後、直ちに次のコメントを探す
         if (shouldContinue) {
@@ -794,6 +748,441 @@
       
       content.classList.toggle('collapsed');
       toggle.classList.toggle('collapsed');
+    }
+
+    // VTubeStudioへの接続を確立
+    async function connectToVTS() {
+      try {
+        vtsWebSocket = new WebSocket(VTS_WEBSOCKET_URL);
+        
+        vtsWebSocket.onopen = () => {
+          console.log('VTubeStudio WebSocketに接続しました');
+          // 認証プロセスを開始
+          authenticateWithVTS();
+        };
+        
+        vtsWebSocket.onclose = () => {
+          console.log('VTubeStudio WebSocket接続が切断されました');
+          vtsAuthenticated = false;
+        };
+        
+        vtsWebSocket.onerror = (error) => {
+          console.error('VTubeStudio WebSocketエラー:', error);
+          showError('VTubeStudioとの接続に失敗しました');
+        };
+        
+        vtsWebSocket.onmessage = handleVTSMessage;
+      } catch (error) {
+        console.error('VTubeStudio接続エラー:', error);
+        showError('VTubeStudioとの接続に失敗しました');
+      }
+    }
+
+    // VTSからのメッセージを処理
+    async function handleVTSMessage(event) {
+      try {
+        const response = JSON.parse(event.data);
+        console.log('VTS Response:', response);
+        
+        if (response.messageType === 'APIError') {
+          console.error('VTS APIエラー:', {
+            message: response.data?.message,
+            code: response.data?.errorID,
+            details: response.data
+          });
+          return;
+        }
+        
+        if (response.messageType === 'AuthenticationTokenResponse') {
+          const token = response.data.authenticationToken;
+          localStorage.setItem('vtsAuthToken', token);
+          sendVTSAuthRequest(token);
+        }
+        else if (response.messageType === 'AuthenticationResponse') {
+          vtsAuthenticated = response.data.authenticated;
+          if (vtsAuthenticated) {
+            console.log('VTubeStudioの認証に成功しました');
+            setTimeout(requestModelList, 1000);
+          }
+        }
+        else if (response.messageType === 'AvailableModelsResponse') {
+          console.log('利用可能なモデル:', response.data.availableModels);
+          
+          const currentModel = response.data.availableModels.find(model => model.modelLoaded);
+          if (currentModel) {
+            console.log('現在ロードされているモデル:', currentModel);
+            const request = {
+              apiName: "VTubeStudioPublicAPI",
+              apiVersion: "1.0",
+              requestID: "parameter-list",
+              messageType: "InputParameterListRequest",
+              data: {
+                modelID: currentModel.modelID
+              }
+            };
+            vtsWebSocket.send(JSON.stringify(request));
+          }
+        }
+        else if (response.messageType === 'InputParameterListResponse') {
+          console.log('パラメータリストのレスポンス:', response);
+          console.log('パラメータリスト:', response.data);
+          console.log('パラメータリスト:', response.data.defaultParameters);
+          
+          if (response.data && response.data.defaultParameters) {
+            const parameters = response.data.defaultParameters;
+            console.log('すべてのパラメータ名:', parameters.map(p => p.name));
+            
+            // 口に関連するパラメータを探す
+            const mouthParameters = parameters.filter(param => {
+              const name = param.name.toLowerCase();
+              const isMouthParam = 
+                name.includes('mouth') || 
+                name.includes('口') ||
+                name.includes('param_mouth') ||
+                name.includes('parammouthopen') ||
+                name.includes('openness');
+              
+              if (isMouthParam) {
+                console.log('見つかった口パラメータ:', param);
+              }
+              return isMouthParam;
+            });
+            
+            if (mouthParameters.length === 0) {
+              console.warn('口に関連するパラメータが見つかりません');
+            } else {
+              console.log('使用する口パラメータ:', mouthParameters);
+            }
+            
+            window.vtsParameters = parameters;
+          } else {
+            console.warn('パラメータが見つかりません:', response);
+          }
+        }
+      } catch (error) {
+        console.error('VTSメッセージ処理エラー:', error);
+      }
+    }
+
+    // モデル一覧を取得
+    function requestModelList() {
+      const request = {
+        apiName: "VTubeStudioPublicAPI",
+        apiVersion: "1.0",
+        requestID: "model-list",
+        messageType: "AvailableModelsRequest"
+      };
+      vtsWebSocket.send(JSON.stringify(request));
+    }
+
+    // VTSに認証トークンをリクエスト
+    function authenticateWithVTS() {
+      const savedToken = localStorage.getItem('vtsAuthToken');
+      
+      if (savedToken) {
+        sendVTSAuthRequest(savedToken);
+      } else {
+        const tokenRequest = {
+          apiName: "VTubeStudioPublicAPI",
+          apiVersion: "1.0",
+          requestID: "token-request",
+          messageType: "AuthenticationTokenRequest",
+          data: {
+            pluginName: "AITuber Sample App",
+            pluginDeveloper: "Developer"
+          }
+        };
+        vtsWebSocket.send(JSON.stringify(tokenRequest));
+      }
+    }
+
+    // 保存されたトークンで認証
+    function sendVTSAuthRequest(token) {
+      const authRequest = {
+        apiName: "VTubeStudioPublicAPI",
+        apiVersion: "1.0",
+        requestID: "auth-request",
+        messageType: "AuthenticationRequest",
+        data: {
+          pluginName: "AITuber Sample App",
+          pluginDeveloper: "Developer",
+          authenticationToken: token
+        }
+      };
+      vtsWebSocket.send(JSON.stringify(authRequest));
+    }
+
+    // 音声生成とリップシンク制御を行う関数
+    async function generateVoiceAndLipSync(text) {
+      try {
+        const settings = getSettings();
+        console.log('音声生成開始:', text);
+        
+        // タイムアウト設定を追加
+        const timeout = 10000; // 10秒
+        
+        // audio_queryリクエストにタイムアウトを設定
+        const queryPromise = fetch(`${settings.VOICEVOX_ENDPOINT}/audio_query?text=${encodeURIComponent(text)}&speaker=${settings.VOICEVOX_SPEAKER}`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(timeout)
+        });
+        
+        console.log('audio_query リクエスト開始');
+        const query = await queryPromise;
+        if (!query.ok) {
+          throw new Error(`audio_query failed: ${query.status} ${query.statusText}`);
+        }
+        const queryJson = await query.json();
+        console.log('audio_query 完了');
+        
+        // synthesis リクエストにタイムアウトを設定
+        const synthesisPromise = fetch(`${settings.VOICEVOX_ENDPOINT}/synthesis?speaker=${settings.VOICEVOX_SPEAKER}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(queryJson),
+          signal: AbortSignal.timeout(timeout)
+        });
+        
+        console.log('synthesis リクエスト開始');
+        const synthesis = await synthesisPromise;
+        if (!synthesis.ok) {
+          throw new Error(`synthesis failed: ${synthesis.status} ${synthesis.statusText}`);
+        }
+        
+        // 音声データを取得
+        const audioData = await synthesis.arrayBuffer();
+        console.log('音声データ取得完了:', audioData.byteLength, 'bytes');
+        
+        // 音声再生の準備
+        const audioBlob = new Blob([audioData], { type: 'audio/wav' });
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const audio = new Audio(audioUrl);
+        
+        // 音声再生とリップシンク制御を同期
+        return new Promise((resolve, reject) => {
+          let lipSyncStarted = false;
+          
+          audio.onplay = () => {
+            console.log('音声再生開始');
+            if (!lipSyncStarted) {
+              lipSyncStarted = true;
+              // リップシンク制御を開始
+              controlLipSync(audioData).catch(error => {
+                console.error('リップシンク制御エラー:', error);
+              });
+            }
+          };
+          
+          audio.onended = () => {
+            console.log('音声再生完了');
+            URL.revokeObjectURL(audioUrl);
+            resolve();
+          };
+          
+          audio.onerror = (error) => {
+            console.error('音声再生エラー:', error);
+            URL.revokeObjectURL(audioUrl);
+            reject(error);
+          };
+          
+          // 音声再生開始
+          audio.play().catch(error => {
+            console.error('音声再生開始エラー:', error);
+            reject(error);
+          });
+        });
+        
+      } catch (error) {
+        if (error.name === 'TimeoutError') {
+          console.error('VOICEVOXリクエストがタイムアウトしました:', error);
+          showError('音声生成がタイムアウトしました。VOICEVOXサーバーの状態を確認してください。');
+        } else {
+          console.error('音声生成エラー:', error);
+          showError('音声の生成に失敗しました: ' + error.message);
+        }
+        throw error;
+      }
+    }
+
+    // リップシンク制御の関数を修正
+    async function controlLipSync(audioData) {
+      if (!vtsAuthenticated || !vtsWebSocket) {
+        throw new Error('VTubeStudioが接続されていません');
+      }
+
+      if (!window.vtsParameters) {
+        throw new Error('モデルパラメータが取得できていません');
+      }
+
+      console.log('リップシンク制御開始');
+      
+      const audioContext = new AudioContext();
+      const audioBuffer = await audioContext.decodeAudioData(audioData);
+      const channelData = audioBuffer.getChannelData(0);
+      
+      const interval = 100; // 100ms間隔で更新
+      const samplesPerInterval = Math.floor(audioBuffer.sampleRate * (interval / 1000));
+      
+      // 母音パラメータの準備
+      const voiceParams = {
+        'a': window.vtsParameters.find(p => p.name === 'VoiceA')?.name,
+        'i': window.vtsParameters.find(p => p.name === 'VoiceI')?.name,
+        'u': window.vtsParameters.find(p => p.name === 'VoiceU')?.name,
+        'e': window.vtsParameters.find(p => p.name === 'VoiceE')?.name,
+        'o': window.vtsParameters.find(p => p.name === 'VoiceO')?.name
+      };
+
+      // 一般的な口の開きパラメータも取得
+      const mouthParams = window.vtsParameters
+        .filter(param => {
+          const name = param.name.toLowerCase();
+          return (name.includes('mouth') || name.includes('口')) && 
+                 !name.includes('voice'); // 母音パラメータは除外
+        })
+        .map(param => param.name);
+      
+      console.log('使用する母音パラメータ:', voiceParams);
+      console.log('使用する口パラメータ:', mouthParams);
+      
+      // 音声分析用のAnalyserNodeを作成
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      
+      // 音声データをバッファに入れる（再生はしない）
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(analyser);
+      
+      const frequencyData = new Float32Array(analyser.frequencyBinCount);
+      
+      // レスポンスハンドラを設定
+      const originalOnMessage = vtsWebSocket.onmessage;
+      const messageHandler = (event) => {
+        const response = JSON.parse(event.data);
+        if (response.messageType === 'InjectParameterDataResponse') {
+          responseCount++;
+        }
+        if (originalOnMessage) {
+          originalOnMessage(event);
+        }
+      };
+      vtsWebSocket.onmessage = messageHandler;
+      
+      try {
+        source.start(0);
+        
+        for (let i = 0; i < channelData.length; i += samplesPerInterval) {
+          // 音量の計算
+          let sum = 0;
+          for (let j = 0; j < samplesPerInterval && (i + j) < channelData.length; j++) {
+            sum += Math.abs(channelData[i + j]);
+          }
+          const volume = sum / samplesPerInterval;
+          const baseValue = Math.min(Math.max(volume * 8, 0), 1);
+          
+          // スペクトル分析で母音を推定
+          analyser.getFloatFrequencyData(frequencyData);
+          
+          // 簡易的な母音判定（周波数帯域による特徴で判定）
+          const formants = getFormants(frequencyData, audioContext.sampleRate);
+          const vowel = estimateVowel(formants);
+          
+          // パラメータ値を設定
+          const parameterValues = [];
+          
+          // 基本の口の開きパラメータ
+          mouthParams.forEach(param => {
+            parameterValues.push({
+              id: param,
+              value: baseValue * 0.8 + 0.2,
+              weight: 1
+            });
+          });
+          
+          // 母音に応じたパラメータ
+          if (vowel && voiceParams[vowel]) {
+            parameterValues.push({
+              id: voiceParams[vowel],
+              value: baseValue,
+              weight: 1
+            });
+          }
+          
+          const request = {
+            apiName: "VTubeStudioPublicAPI",
+            apiVersion: "1.0",
+            requestID: `lipSync-${Date.now()}`,
+            messageType: "InjectParameterDataRequest",
+            data: { parameterValues }
+          };
+          
+          vtsWebSocket.send(JSON.stringify(request));
+          await new Promise(resolve => setTimeout(resolve, interval));
+        }
+      } finally {
+        source.stop();
+        vtsWebSocket.onmessage = originalOnMessage;
+        console.log('リップシンク制御完了');
+      }
+    }
+
+    // フォルマント周波数を取得
+    function getFormants(frequencyData, sampleRate) {
+      const binSize = sampleRate / (frequencyData.length * 2);
+      const peaks = [];
+      
+      // ピーク（フォルマント）を検出
+      for (let i = 1; i < frequencyData.length - 1; i++) {
+        if (frequencyData[i] > frequencyData[i-1] && 
+            frequencyData[i] > frequencyData[i+1] && 
+            frequencyData[i] > -60) {
+          peaks.push({
+            frequency: i * binSize,
+            amplitude: frequencyData[i]
+          });
+        }
+      }
+      
+      // 振幅順にソート
+      peaks.sort((a, b) => b.amplitude - a.amplitude);
+      
+      // 上位2つのフォルマントを返す
+      return peaks.slice(0, 2).map(p => p.frequency);
+    }
+
+    // フォルマント周波数から母音を推定
+    function estimateVowel(formants) {
+      if (formants.length < 2) return null;
+      
+      const [f1, f2] = formants;
+      
+      // 日本語の母音のフォルマント周波数の一般的な値（Hz）
+      const vowelFormants = {
+        'a': { f1: 850, f2: 1200 },
+        'i': { f1: 300, f2: 2200 },
+        'u': { f1: 300, f2: 1600 },
+        'e': { f1: 500, f2: 1800 },
+        'o': { f1: 500, f2: 800 }
+      };
+      
+      // 最も近い母音を見つける
+      let minDist = Infinity;
+      let closestVowel = null;
+      
+      for (const [vowel, target] of Object.entries(vowelFormants)) {
+        const dist = Math.sqrt(
+          Math.pow(f1 - target.f1, 2) + 
+          Math.pow(f2 - target.f2, 2)
+        );
+        if (dist < minDist) {
+          minDist = dist;
+          closestVowel = vowel;
+        }
+      }
+      
+      return closestVowel;
     }
   </script>
 </body>
