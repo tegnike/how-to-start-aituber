@@ -309,6 +309,13 @@
   </div>
 
   <script>
+    // グローバル変数の初期化を最初に行う
+    const statusDiv = document.getElementById('status');
+    let isProcessing = false;
+    let shouldContinue = false;
+    let processedMessageIds = new Map();
+    let conversationHistory = [];
+
     // 初期値を設定
     function initializeSettings() {
       document.getElementById('youtubeApiKey').value = DEFAULT_SETTINGS.YOUTUBE_API_KEY;
@@ -323,15 +330,48 @@
       document.getElementById('conversationHistorySize').value = DEFAULT_SETTINGS.CONVERSATION_HISTORY_SIZE;
     }
 
-    // ページ読み込み時に初期値を設定
-    initializeSettings();
-    updateConversationDisplay(); // 初期表示時に件数を表示
+    // DOMContentLoadedイベントで初期化を行う
+    document.addEventListener('DOMContentLoaded', () => {
+      initializeSettings();
+      updateConversationDisplay();
 
-    const statusDiv = document.getElementById('status');
-    let isProcessing = false;
-    let shouldContinue = false;
-    let processedMessageIds = new Map();
-    let conversationHistory = [];
+      // イベントリスナーの設定
+      document.getElementById('startButton').addEventListener('click', () => {
+        if (isProcessing) return;
+        
+        // 設定値の検証
+        const settings = getSettings();
+        if (!settings.YOUTUBE_API_KEY) {
+          showError("YouTube API Keyが設定されていません");
+          return;
+        }
+        if (!settings.VIDEO_ID) {
+          showError("配信IDが設定されていません");
+          return;
+        }
+        if (!settings.OPENAI_API_KEY) {
+          showError("OpenAI API Keyが設定されていません");
+          return;
+        }
+        
+        clearError();
+        shouldContinue = true;
+        isProcessing = true;
+        processedMessageIds.clear();
+        updateButtonState(true);
+        console.log("処理を開始します"); // デバッグログ追加
+        processNextComment();
+      });
+
+      document.getElementById('stopButton').addEventListener('click', () => {
+        shouldContinue = false;
+        isProcessing = false;
+        updateButtonState(false);
+        statusDiv.innerText = "停止しました";
+        conversationHistory = [];
+        updateConversationDisplay();
+      });
+    });
 
     // 設定値を取得する関数を修正
     function getSettings() {
@@ -400,13 +440,18 @@
       statusDiv.innerText = "YouTubeライブチャットを取得中...";
       clearError();
       
+      console.log("YouTube API呼び出し開始"); // デバッグログ追加
+      
       try {
         // まずライブチャットIDを取得
         const videoUrl = `https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=${settings.VIDEO_ID}&key=${settings.YOUTUBE_API_KEY}`;
+        console.log("動画情報取得URL:", videoUrl); // デバッグログ追加
+        
         const videoResponse = await fetch(videoUrl);
         
         if (!videoResponse.ok) {
           const errorText = await videoResponse.text();
+          console.error("YouTube API エラー:", errorText); // デバッグログ追加
           let errorMessage = `YouTube API エラー (${videoResponse.status})`;
           if (videoResponse.status === 403) {
             errorMessage = 'YouTube API キーが無効か、アクセス権限がありません';
@@ -418,6 +463,7 @@
         }
 
         const videoData = await videoResponse.json();
+        console.log("取得した動画データ:", videoData); // デバッグログ追加
         
         if (!videoData.items?.[0]?.liveStreamingDetails?.activeLiveChatId) {
           showError('この動画はライブ配信ではないか、ライブチャットが無効になっています');
@@ -503,6 +549,11 @@
       
       if (unprocessedMessages.length === 0) return null;
 
+      // すべてのメッセージを処理済みとしてマーク
+      messages.forEach(msg => {
+        processedMessageIds.set(msg.id, Date.now());
+      });
+
       // OpenAIを使って最適なコメントを選択
       const selectedId = await selectBestComment(unprocessedMessages);
       let selectedMessage;
@@ -516,9 +567,6 @@
         const randomIndex = Math.floor(Math.random() * unprocessedMessages.length);
         selectedMessage = unprocessedMessages[randomIndex];
       }
-      
-      // 選択したメッセージを処理済みとしてマーク（現在のタイムスタンプと共に）
-      processedMessageIds.set(selectedMessage.id, Date.now());
       
       return selectedMessage.snippet.displayMessage;
     }
@@ -673,51 +721,42 @@
     async function processNextComment() {
       if (!shouldContinue) return;
       
-      const settings = getSettings();
-      const messages = await fetchYoutubeLiveChat();
-      const messageText = await pickRandomChat(messages);
-      
-      if (!messageText) {
-        statusDiv.innerText = "チャットメッセージがありません。" + settings.WAIT_TIME + "秒後に再取得します。";
-        if (shouldContinue) {
-          setTimeout(processNextComment, settings.WAIT_TIME * 1000); // 秒をミリ秒に変換
+      try {
+        const settings = getSettings();
+        const messages = await fetchYoutubeLiveChat();
+        const messageText = await pickRandomChat(messages);
+        
+        if (!messageText) {
+          statusDiv.innerText = "チャットメッセージがありません。" + settings.WAIT_TIME + "秒後に再取得します。";
+          if (shouldContinue) {
+            setTimeout(processNextComment, settings.WAIT_TIME * 1000);
+          }
+          return;
         }
-        return;
-      }
 
-      console.log("取得したチャット:", messageText);
-      const openaiResponse = await getOpenAIResponse(messageText);
-      console.log("OpenAIからの返答:", openaiResponse);
+        console.log("取得したチャット:", messageText);
+        const openaiResponse = await getOpenAIResponse(messageText);
+        console.log("OpenAIからの返答:", openaiResponse);
 
-      await speakWithVoicevox(openaiResponse);
-
-      if (shouldContinue) {
-        processNextComment();
+        // 音声発話が完了するまで待機
+        await speakWithVoicevox(openaiResponse);
+        
+        // 音声発話完了後、直ちに次のコメントを探す
+        if (shouldContinue) {
+          statusDiv.innerText = "次のコメントを探しています...";
+          processNextComment();
+        }
+      } catch (error) {
+        console.error("処理中にエラーが発生:", error);
+        showError("処理中にエラーが発生しました", error.toString());
+        
+        // エラーが発生しても継続する場合は、一定時間後に再試行
+        if (shouldContinue) {
+          const settings = getSettings();
+          setTimeout(processNextComment, settings.WAIT_TIME * 1000);
+        }
       }
     }
-
-    // イベントリスナーの設定
-    document.getElementById('startButton').addEventListener('click', () => {
-      if (isProcessing) return;
-      shouldContinue = true;
-      isProcessing = true;
-      processedMessageIds.clear();
-      updateButtonState(true);
-      processNextComment();
-    });
-
-    document.getElementById('stopButton').addEventListener('click', () => {
-      shouldContinue = false;
-      isProcessing = false;
-      updateButtonState(false);
-      statusDiv.innerText = "停止しました";
-      // 会話履歴をクリアして表示を更新
-      conversationHistory = [];
-      updateConversationDisplay();
-    });
-
-    // 初回実行
-    processNextComment();
 
     function updateConversationDisplay() {
       const container = document.getElementById('conversation-container');
