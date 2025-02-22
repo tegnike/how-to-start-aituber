@@ -56,7 +56,7 @@ sequenceDiagram
 - **コメント選択プロンプト**: 返信するコメントを選択するための基準を定義するプロンプト
 
 ### VOICEVOX設定
-- **エンドポイント**: VOICEVOXのAPIエンドポイント（デフォルト: http://localhost:50021）
+- **エンドポイント**: VOICEVOXのAPIエンドポイント（デフォルト: http://localhost:50021 ）
 - **話者ID**: 使用する話者のID
 
 ### 会話履歴設定
