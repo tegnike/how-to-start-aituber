@@ -2,6 +2,32 @@
 
 このアプリケーションは、YouTubeのライブ配信チャットに自動で返信するAIチャットボットのサンプル実装です。OpenAIのGPTモデルを使用して返答を生成し、VOICEVOXを使用して音声合成を行います。
 
+## アプリケーションフロー
+
+```mermaid
+sequenceDiagram
+    participant User as ユーザー
+    participant App as アプリケーション
+    participant YT as YouTube API
+    participant GPT as OpenAI API
+    participant VV as VOICEVOX
+
+    User->>App: 開始ボタンクリック
+    loop 定期実行
+        App->>YT: ライブチャット取得
+        YT-->>App: チャットメッセージ
+        App->>GPT: 最適なコメント選択
+        GPT-->>App: 選択されたコメント
+        App->>GPT: 返答生成リクエスト
+        GPT-->>App: AI生成された返答
+        App->>VV: 音声合成リクエスト
+        VV-->>App: 合成音声データ
+        App->>User: 音声再生
+        App->>App: 会話履歴更新
+    end
+    User->>App: 停止ボタンクリック
+```
+
 ## 機能
 
 - YouTubeライブ配信のチャットメッセージの取得
@@ -38,11 +64,17 @@
 
 ## 使用方法
 
-1. VOICEVOXをローカルで起動します
-2. 必要なAPIキーを設定画面で入力します
-3. YouTubeライブ配信のIDを設定します
-4. 「開始」ボタンをクリックして処理を開始します
-5. 「停止」ボタンで処理を終了できます
+1. ローカルサーバーを起動します
+   ```bash
+   python -m http.server 3000
+   ```
+   その後、ブラウザで http://localhost:3000 にアクセスしてください
+
+2. VOICEVOXをローカルで起動します
+3. 必要なAPIキーを設定画面で入力します
+4. YouTubeライブ配信のIDを設定します
+5. 「開始」ボタンをクリックして処理を開始します
+6. 「停止」ボタンで処理を終了できます
 
 ## エラー処理
 
@@ -71,21 +103,3 @@ const DEFAULT_SETTINGS = {
   CONVERSATION_HISTORY_SIZE: 10
 }
 ```
-
-## 技術スタック
-
-- YouTube Data API v3
-- OpenAI API
-- VOICEVOX API
-- HTML/CSS/JavaScript (フロントエンド)
-
-## 注意事項
-
-- APIキーは適切に管理してください
-- APIの利用制限に注意してください
-- VOICEVOXは別途インストールと起動が必要です
-- ブラウザのオーディオ再生権限が必要です
-
-## ライセンス
-
-MITライセンス
