@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>AITuberのつくりかた サンプルアプリ</title>
+
+  <!-- アプリケーションのデフォルト設定値 -->
+  <script>
+    // 設定のデフォルト値（画面の入力項目の初期値として使用）
+    const DEFAULT_SETTINGS = {
+      // YouTube設定
+      YOUTUBE_API_KEY: '',
+      VIDEO_ID: '',
+      WAIT_TIME: 10, // チャット取得間隔（秒）
+      MESSAGE_LIFETIME: 300, // メッセージの保持期間（秒）
+
+      // OpenAI設定
+      OPENAI_API_KEY: '',
+      OPENAI_MODEL: 'gpt-4o-mini',
+      SYSTEM_PROMPT: `あなたはYouTubeライブ配信のチャットに返答するAIチャットボットです。
+視聴者からのチャットメッセージに対して、親しみやすく、でも礼儀正しい口調で返答してください。
+返答は簡潔に、1〜2文程度でお願いします。`,
+
+      // コメント選択用のプロンプトを追加
+      COMMENT_SELECTION_PROMPT: `以下のYouTubeライブチャットのコメントリストから、最も返信に適したコメントを1つ選んでください。
+選ぶ際は以下の基準を考慮してください：
+- 質問や会話が成立しそうなコメント
+- 不適切な内容を含まないコメント
+- 単純な挨拶だけでないコメント
+
+返答は以下のJSON形式で返してください：
+{"selectedId": "選択したコメントのID"}`,
+
+      // VOICEVOX設定
+      VOICEVOX_ENDPOINT: 'http://localhost:50021',
+      VOICEVOX_SPEAKER: 1,
+
+      // 会話履歴の設定を追加
+      CONVERSATION_HISTORY_SIZE: 10, // 保持する会話の数（0-100）
+    };
+  </script>
+
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+      background-color: #f4f4f4;
+    }
+    #status, #error-message {
+      padding: 10px;
+      background: #fff;
+      border: 1px solid #ddd;
+      margin-bottom: 20px;
+    }
+    #error-message {
+      display: none;
+      background: #fff0f0;
+      border-color: #ffcdd2;
+      color: #d32f2f;
+    }
+    #error-details {
+      display: none;
+      margin-top: 10px;
+      padding: 10px;
+      background: #fff;
+      border: 1px solid #ddd;
+      font-family: monospace;
+      white-space: pre-wrap;
+    }
+    .error #error-details {
+      display: block;
+    }
+    .settings {
+      background: #fff;
+      padding: 20px;
+      border: 1px solid #ddd;
+      margin-bottom: 20px;
+    }
+    .settings h3 {
+      margin: 15px 0 5px;
+      padding-bottom: 5px;
+      border-bottom: 1px solid #eee;
+    }
+    .settings textarea {
+      width: 100%;
+      min-height: 100px;
+      padding: 5px;
+      margin: 5px 0;
+      font-family: sans-serif;
+    }
+    .settings-group {
+      margin-bottom: 20px;
+    }
+    .controls {
+      margin: 20px 0;
+    }
+    .controls button {
+      padding: 10px 20px;
+      margin-right: 10px;
+      cursor: pointer;
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+    #conversation-history {
+      background: #fff;
+      padding: 20px;
+      border: 1px solid #ddd;
+      margin-top: 20px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    
+    .conversation-item {
+      margin-bottom: 15px;
+      padding-bottom: 15px;
+      border-bottom: 1px solid #eee;
+    }
+    
+    .user-message {
+      color: #2196F3;
+      margin-bottom: 5px;
+    }
+    
+    .assistant-response {
+      color: #4CAF50;
+    }
+    
+    .settings-header {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    
+    .settings-header h2 {
+      margin: 0;
+    }
+    
+    .settings-toggle {
+      margin-left: auto;
+      padding: 5px;
+      font-size: 20px;
+      transition: transform 0.3s;
+    }
+    
+    .settings-content {
+      transition: max-height 0.3s ease-out;
+      overflow: hidden;
+      max-height: 2000px; /* 十分大きな値 */
+    }
+    
+    .settings-content.collapsed {
+      max-height: 0;
+    }
+    
+    /* 矢印の回転 */
+    .settings-toggle.collapsed {
+      transform: rotate(-90deg);
+    }
+  </style>
+</head>
+<body>
+  <h1>AITuberのつくりかた サンプルアプリ</h1>
+  
+  <div class="settings">
+    <div class="settings-header" onclick="toggleSettings()">
+      <h2>設定</h2>
+      <span class="settings-toggle">▼</span>
+    </div>
+    <div class="settings-content">
+      <div class="settings-group">
+        <h3>YouTube設定</h3>
+        <div class="setting-item">
+          <label for="youtubeApiKey">API Key:</label>
+          <input type="text" id="youtubeApiKey">
+        </div>
+        <div class="setting-item">
+          <label for="videoId">配信ID:</label>
+          <input type="text" id="videoId">
+        </div>
+        <div class="setting-item">
+          <label for="waitTime">チャット取得間隔（秒）:</label>
+          <input type="number" id="waitTime" min="1">
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h3>OpenAI設定</h3>
+        <div class="setting-item">
+          <label for="openaiApiKey">API Key:</label>
+          <input type="text" id="openaiApiKey">
+        </div>
+        <div class="setting-item">
+          <label for="openaiModel">モデル:</label>
+          <select id="openaiModel">
+            <option value="gpt-4o-mini">GPT-4o-mini</option>
+            <option value="gpt-4o">GPT-4o</option>
+          </select>
+        </div>
+        <div class="setting-item">
+          <label for="systemPrompt">システムプロンプト:</label>
+          <textarea id="systemPrompt"></textarea>
+        </div>
+        <div class="setting-item">
+          <label for="commentSelectionPrompt">コメント選択プロンプト:</label>
+          <textarea id="commentSelectionPrompt"></textarea>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h3>VOICEVOX設定</h3>
+        <label>
+          エンドポイント:
+          <input type="text" id="voicevoxEndpoint">
+        </label>
+        <label>
+          話者ID:
+          <input type="number" id="voicevoxSpeaker">
+        </label>
+      </div>
+
+      <div class="settings-group">
+        <h3>会話履歴設定</h3>
+        <div class="setting-item">
+          <label for="conversationHistorySize">保持する会話数:</label>
+          <input type="number" id="conversationHistorySize" min="0" max="100">
+          <small>（0は会話履歴を使用しない、最大100）</small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="startButton">開始</button>
+    <button id="stopButton" disabled>停止</button>
+  </div>
+
+  <div id="status">待機中...</div>
+  <div id="error-message"></div>
+  <div id="error-details"></div>
+
+  <div id="conversation-history">
+    <div class="settings-header">
+      <h2>会話履歴 (<span id="conversation-count">0</span>/<span id="conversation-max">0</span>件)</h2>
+    </div>
+    <div id="conversation-container"></div>
+  </div>
+
+  <script>
+    // 初期値を設定
+    function initializeSettings() {
+      document.getElementById('youtubeApiKey').value = DEFAULT_SETTINGS.YOUTUBE_API_KEY;
+      document.getElementById('videoId').value = DEFAULT_SETTINGS.VIDEO_ID;
+      document.getElementById('waitTime').value = DEFAULT_SETTINGS.WAIT_TIME;
+      document.getElementById('openaiApiKey').value = DEFAULT_SETTINGS.OPENAI_API_KEY;
+      document.getElementById('openaiModel').value = DEFAULT_SETTINGS.OPENAI_MODEL;
+      document.getElementById('systemPrompt').value = DEFAULT_SETTINGS.SYSTEM_PROMPT;
+      document.getElementById('commentSelectionPrompt').value = DEFAULT_SETTINGS.COMMENT_SELECTION_PROMPT;
+      document.getElementById('voicevoxEndpoint').value = DEFAULT_SETTINGS.VOICEVOX_ENDPOINT;
+      document.getElementById('voicevoxSpeaker').value = DEFAULT_SETTINGS.VOICEVOX_SPEAKER;
+      document.getElementById('conversationHistorySize').value = DEFAULT_SETTINGS.CONVERSATION_HISTORY_SIZE;
+    }
+
+    // ページ読み込み時に初期値を設定
+    initializeSettings();
+    updateConversationDisplay(); // 初期表示時に件数を表示
+
+    const statusDiv = document.getElementById('status');
+    let isProcessing = false;
+    let shouldContinue = false;
+    let processedMessageIds = new Map();
+    let conversationHistory = [];
+
+    // 設定値を取得する関数を修正
+    function getSettings() {
+      return {
+        YOUTUBE_API_KEY: document.getElementById('youtubeApiKey').value,
+        VIDEO_ID: document.getElementById('videoId').value,
+        OPENAI_API_KEY: document.getElementById('openaiApiKey').value,
+        OPENAI_MODEL: document.getElementById('openaiModel').value,
+        VOICEVOX_ENDPOINT: document.getElementById('voicevoxEndpoint').value,
+        VOICEVOX_SPEAKER: parseInt(document.getElementById('voicevoxSpeaker').value),
+        WAIT_TIME: parseInt(document.getElementById('waitTime').value),
+        SYSTEM_PROMPT: document.getElementById('systemPrompt').value,
+        COMMENT_SELECTION_PROMPT: document.getElementById('commentSelectionPrompt').value,
+        MESSAGE_LIFETIME: DEFAULT_SETTINGS.MESSAGE_LIFETIME,
+        CONVERSATION_HISTORY_SIZE: parseInt(document.getElementById('conversationHistorySize').value)
+      };
+    }
+
+    // ボタンの状態を更新する関数
+    function updateButtonState(isRunning) {
+      document.getElementById('startButton').disabled = isRunning;
+      document.getElementById('stopButton').disabled = !isRunning;
+    }
+
+    // エラー表示用の関数を修正
+    function showError(message, details = '') {
+      const errorMessageDiv = document.getElementById('error-message');
+      const errorDetailsDiv = document.getElementById('error-details');
+      
+      errorMessageDiv.style.display = 'block';
+      errorMessageDiv.textContent = message;
+      
+      if (details) {
+        errorDetailsDiv.style.display = 'block';
+        errorDetailsDiv.textContent = details;
+      } else {
+        errorDetailsDiv.style.display = 'none';
+      }
+    }
+
+    // エラー表示をクリアする関数を修正
+    function clearError() {
+      const errorMessageDiv = document.getElementById('error-message');
+      const errorDetailsDiv = document.getElementById('error-details');
+      
+      errorMessageDiv.style.display = 'none';
+      errorDetailsDiv.style.display = 'none';
+    }
+
+    // 期限切れのメッセージIDを削除する関数
+    function cleanupProcessedMessages() {
+      const settings = getSettings();
+      const now = Date.now();
+      const expiryTime = settings.MESSAGE_LIFETIME * 1000; // 秒をミリ秒に変換
+      
+      for (const [id, timestamp] of processedMessageIds) {
+        if (now - timestamp > expiryTime) {
+          processedMessageIds.delete(id);
+        }
+      }
+    }
+
+    // Youtubeからライブチャットを取得する関数
+    async function fetchYoutubeLiveChat() {
+      const settings = getSettings();
+      statusDiv.innerText = "YouTubeライブチャットを取得中...";
+      clearError();
+      
+      try {
+        // まずライブチャットIDを取得
+        const videoUrl = `https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=${settings.VIDEO_ID}&key=${settings.YOUTUBE_API_KEY}`;
+        const videoResponse = await fetch(videoUrl);
+        
+        if (!videoResponse.ok) {
+          const errorText = await videoResponse.text();
+          let errorMessage = `YouTube API エラー (${videoResponse.status})`;
+          if (videoResponse.status === 403) {
+            errorMessage = 'YouTube API キーが無効か、アクセス権限がありません';
+          } else if (videoResponse.status === 404) {
+            errorMessage = '指定された動画が見つかりません';
+          }
+          showError(errorMessage, errorText);
+          return [];
+        }
+
+        const videoData = await videoResponse.json();
+        
+        if (!videoData.items?.[0]?.liveStreamingDetails?.activeLiveChatId) {
+          showError('この動画はライブ配信ではないか、ライブチャットが無効になっています');
+          return [];
+        }
+
+        const liveChatId = videoData.items[0].liveStreamingDetails.activeLiveChatId;
+        
+        // ライブチャットメッセージを取得
+        const chatUrl = `https://www.googleapis.com/youtube/v3/liveChat/messages?part=snippet&liveChatId=${liveChatId}&key=${settings.YOUTUBE_API_KEY}`;
+        const chatResponse = await fetch(chatUrl);
+        
+        if (!chatResponse.ok) {
+          const errorText = await chatResponse.text();
+          showError(
+            'ライブチャットの取得に失敗しました',
+            errorText
+          );
+          return [];
+        }
+
+        const chatData = await chatResponse.json();
+        return chatData.items || [];
+
+      } catch (error) {
+        showError(
+          'YouTube APIの呼び出しに失敗しました。',
+          error.toString()
+        );
+        return [];
+      }
+    }
+
+    // OpenAIを使って最適なコメントを選択する関数を追加
+    async function selectBestComment(messages) {
+      const settings = getSettings();
+      
+      const messagesList = messages.map(msg => ({
+        id: msg.id,
+        message: msg.snippet.displayMessage
+      }));
+
+      try {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${settings.OPENAI_API_KEY}`
+          },
+          body: JSON.stringify({
+            model: settings.OPENAI_MODEL,
+            messages: [
+              {"role": "system", "content": settings.COMMENT_SELECTION_PROMPT},
+              {"role": "user", "content": "コメントリスト：" + JSON.stringify(messagesList, null, 2)}
+            ]
+          })
+        });
+
+        if (!response.ok) {
+          console.error('コメント選択でエラーが発生しました。ランダム選択を使用します。');
+          return null;
+        }
+
+        const data = await response.json();
+        const result = JSON.parse(data.choices[0].message.content);
+        return result.selectedId;
+
+      } catch (error) {
+        console.error('コメント選択でエラーが発生しました。ランダム選択を使用します。', error);
+        return null;
+      }
+    }
+
+    // 取得したチャットメッセージから最適なものを選ぶ関数を修正
+    async function pickRandomChat(messages) {
+      if (!messages || messages.length === 0) return null;
+      
+      // 期限切れのメッセージを削除
+      cleanupProcessedMessages();
+      
+      // 未処理のメッセージをフィルタリング
+      const unprocessedMessages = messages.filter(msg => !processedMessageIds.has(msg.id));
+      
+      if (unprocessedMessages.length === 0) return null;
+
+      // OpenAIを使って最適なコメントを選択
+      const selectedId = await selectBestComment(unprocessedMessages);
+      let selectedMessage;
+
+      if (selectedId) {
+        selectedMessage = unprocessedMessages.find(msg => msg.id === selectedId);
+      }
+
+      // OpenAIでの選択に失敗した場合はランダムに選択
+      if (!selectedMessage) {
+        const randomIndex = Math.floor(Math.random() * unprocessedMessages.length);
+        selectedMessage = unprocessedMessages[randomIndex];
+      }
+      
+      // 選択したメッセージを処理済みとしてマーク（現在のタイムスタンプと共に）
+      processedMessageIds.set(selectedMessage.id, Date.now());
+      
+      return selectedMessage.snippet.displayMessage;
+    }
+
+    // OpenAI APIを呼び出す関数を修正
+    async function getOpenAIResponse(commentText) {
+      const settings = getSettings();
+      statusDiv.innerText = "OpenAIに問い合わせ中...";
+      clearError();
+      
+      // システムメッセージを含む基本的なメッセージ配列を作成
+      const messages = [
+        {"role": "system", "content": settings.SYSTEM_PROMPT}
+      ];
+      
+      // 会話履歴がある場合は追加
+      if (settings.CONVERSATION_HISTORY_SIZE > 0) {
+        conversationHistory.forEach(entry => {
+          messages.push(
+            {"role": "user", "content": entry.userMessage},
+            {"role": "assistant", "content": entry.assistantResponse}
+          );
+        });
+      }
+      
+      // 現在のメッセージを追加
+      messages.push({"role": "user", "content": commentText});
+
+      const url = 'https://api.openai.com/v1/chat/completions';
+      const payload = {
+        model: settings.OPENAI_MODEL,
+        messages: messages
+      };
+
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${settings.OPENAI_API_KEY}`
+          },
+          body: JSON.stringify(payload)
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          let errorMessage = `OpenAI API エラー (${response.status})`;
+          if (response.status === 401) {
+            errorMessage = 'OpenAI API キーが無効です';
+          } else if (response.status === 429) {
+            errorMessage = 'OpenAI APIの利用制限に達しました';
+          }
+          showError(errorMessage, errorText);
+          return "申し訳ありませんが、エラーが発生しました。";
+        }
+
+        const data = await response.json();
+        if (data.error) {
+          showError(
+            'OpenAI APIでエラーが発生しました。',
+            JSON.stringify(data.error, null, 2)
+          );
+          return "申し訳ありませんが、エラーが発生しました。";
+        }
+        if (data.choices && data.choices.length > 0) {
+          const assistantResponse = data.choices[0].message.content.trim();
+          
+          // 会話履歴を更新
+          if (settings.CONVERSATION_HISTORY_SIZE > 0) {
+            conversationHistory.push({
+              userMessage: commentText,
+              assistantResponse: assistantResponse
+            });
+            
+            // 履歴サイズを制限
+            while (conversationHistory.length > settings.CONVERSATION_HISTORY_SIZE) {
+              conversationHistory.shift();
+            }
+            
+            // 会話履歴の表示を更新
+            updateConversationDisplay();
+          }
+          
+          return assistantResponse;
+        }
+        showError('OpenAI APIからの応答が不正です。');
+        return "申し訳ありませんが、返答を生成できませんでした。";
+      } catch (error) {
+        showError(
+          'OpenAI APIの呼び出しに失敗しました。',
+          error.toString()
+        );
+        return "申し訳ありませんが、エラーが発生しました。";
+      }
+    }
+
+    // VOICEVOXを利用してテキストを発話させる関数を修正
+    async function speakWithVoicevox(text) {
+      const settings = getSettings();
+      statusDiv.innerText = "VOICEVOXで発話中...";
+      clearError();
+      
+      try {
+        // 1. audio_query: 発話用クエリの取得
+        const queryResponse = await fetch(`${settings.VOICEVOX_ENDPOINT}/audio_query?text=${encodeURIComponent(text)}&speaker=${settings.VOICEVOX_SPEAKER}`, {
+          method: 'POST'
+        });
+        if (!queryResponse.ok) {
+          showError(
+            'VOICEVOX APIでエラーが発生しました。',
+            await queryResponse.text()
+          );
+          return;
+        }
+        const queryJson = await queryResponse.json();
+
+        // 2. synthesis: 音声合成の実行
+        const synthesisResponse = await fetch(`${settings.VOICEVOX_ENDPOINT}/synthesis?speaker=${settings.VOICEVOX_SPEAKER}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(queryJson)
+        });
+        if (!synthesisResponse.ok) {
+          showError(
+            'VOICEVOX APIでエラーが発生しました。',
+            await synthesisResponse.text()
+          );
+          return;
+        }
+        const audioData = await synthesisResponse.blob();
+        const audioUrl = URL.createObjectURL(audioData);
+        const audio = new Audio(audioUrl);
+
+        return new Promise(resolve => {
+          audio.onended = () => {
+            URL.revokeObjectURL(audioUrl);
+            resolve();
+          };
+          audio.play();
+        });
+      } catch (error) {
+        showError(
+          'VOICEVOX APIの呼び出しに失敗しました。',
+          error.toString()
+        );
+      }
+    }
+
+    // 全体のフローを管理する関数を修正
+    async function processNextComment() {
+      if (!shouldContinue) return;
+      
+      const settings = getSettings();
+      const messages = await fetchYoutubeLiveChat();
+      const messageText = await pickRandomChat(messages);
+      
+      if (!messageText) {
+        statusDiv.innerText = "チャットメッセージがありません。" + settings.WAIT_TIME + "秒後に再取得します。";
+        if (shouldContinue) {
+          setTimeout(processNextComment, settings.WAIT_TIME * 1000); // 秒をミリ秒に変換
+        }
+        return;
+      }
+
+      console.log("取得したチャット:", messageText);
+      const openaiResponse = await getOpenAIResponse(messageText);
+      console.log("OpenAIからの返答:", openaiResponse);
+
+      await speakWithVoicevox(openaiResponse);
+
+      if (shouldContinue) {
+        processNextComment();
+      }
+    }
+
+    // イベントリスナーの設定
+    document.getElementById('startButton').addEventListener('click', () => {
+      if (isProcessing) return;
+      shouldContinue = true;
+      isProcessing = true;
+      processedMessageIds.clear();
+      updateButtonState(true);
+      processNextComment();
+    });
+
+    document.getElementById('stopButton').addEventListener('click', () => {
+      shouldContinue = false;
+      isProcessing = false;
+      updateButtonState(false);
+      statusDiv.innerText = "停止しました";
+      // 会話履歴をクリアして表示を更新
+      conversationHistory = [];
+      updateConversationDisplay();
+    });
+
+    // 初回実行
+    processNextComment();
+
+    function updateConversationDisplay() {
+      const container = document.getElementById('conversation-container');
+      const countElement = document.getElementById('conversation-count');
+      const maxElement = document.getElementById('conversation-max');
+      const settings = getSettings();
+      
+      // 件数表示を更新
+      countElement.textContent = conversationHistory.length;
+      maxElement.textContent = settings.CONVERSATION_HISTORY_SIZE;
+      
+      container.innerHTML = '';
+      
+      conversationHistory.forEach((entry, index) => {
+        const item = document.createElement('div');
+        item.className = 'conversation-item';
+        
+        const userMessage = document.createElement('div');
+        userMessage.className = 'user-message';
+        userMessage.textContent = `視聴者: ${entry.userMessage}`;
+        
+        const assistantResponse = document.createElement('div');
+        assistantResponse.className = 'assistant-response';
+        assistantResponse.textContent = `AI: ${entry.assistantResponse}`;
+        
+        item.appendChild(userMessage);
+        item.appendChild(assistantResponse);
+        container.appendChild(item);
+      });
+    }
+
+    function toggleSettings() {
+      const content = document.querySelector('.settings-content');
+      const toggle = document.querySelector('.settings-toggle');
+      
+      content.classList.toggle('collapsed');
+      toggle.classList.toggle('collapsed');
+    }
+  </script>
+</body>
+</html>
