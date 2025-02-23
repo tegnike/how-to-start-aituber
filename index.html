@@ -15,6 +15,9 @@
       font-family: sans-serif;
       margin: 20px;
       background-color: #f4f4f4;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
     }
     #status, #error-message {
       padding: 10px;
@@ -78,8 +81,10 @@
       padding: 20px;
       border: 1px solid #ddd;
       margin-top: 20px;
-      max-height: 300px;
+      flex-grow: 1;
       overflow-y: auto;
+      min-height: 300px;
+      height: calc(100vh - 600px);
     }
     
     .conversation-item {
@@ -128,6 +133,19 @@
     /* 矢印の回転 */
     .settings-toggle.collapsed {
       transform: rotate(-90deg);
+    }
+    .status-text {
+      margin-top: 5px;
+      padding: 5px;
+      border-radius: 3px;
+    }
+    .status-text.connected {
+      background-color: #e8f5e9;
+      color: #2e7d32;
+    }
+    .status-text.disconnected {
+      background-color: #ffebee;
+      color: #c62828;
     }
   </style>
 </head>
@@ -256,6 +274,8 @@
         <div class="setting-item">
           <label for="vtsPort">ポート番号:</label>
           <input type="number" id="vtsPort" min="1" max="65535">
+          <button id="vtsConnectButton" onclick="toggleVTSConnection()">接続する</button>
+          <div id="vtsStatus" class="status-text"></div>
         </div>
       </div>
 
@@ -312,6 +332,7 @@
       document.getElementById('voicevoxSpeaker').value = DEFAULT_SETTINGS.VOICEVOX_SPEAKER;
       document.getElementById('conversationHistorySize').value = DEFAULT_SETTINGS.CONVERSATION_HISTORY_SIZE;
       document.getElementById('vtsPort').value = DEFAULT_SETTINGS.VTS_PORT || '8001';
+      updateVTSStatus();
     }
 
     // DOMContentLoadedイベントで初期化を行う
@@ -320,7 +341,7 @@
       updateConversationDisplay();
       
       // VTubeStudioに接続
-      connectToVTS();
+      // connectToVTS();
       
       // イベントリスナーの設定
       document.getElementById('startButton').addEventListener('click', () => {
@@ -693,33 +714,18 @@
     }
 
     function updateConversationDisplay() {
-      const container = document.getElementById('conversation-container');
-      const countElement = document.getElementById('conversation-count');
-      const maxElement = document.getElementById('conversation-max');
-      const settings = getSettings();
-      
-      // 件数表示を更新
-      countElement.textContent = conversationHistory.length;
-      maxElement.textContent = settings.CONVERSATION_HISTORY_SIZE;
-      
-      container.innerHTML = '';
-      
-      conversationHistory.forEach((entry, index) => {
-        const item = document.createElement('div');
-        item.className = 'conversation-item';
-        
-        const userMessage = document.createElement('div');
-        userMessage.className = 'user-message';
-        userMessage.textContent = `視聴者: ${entry.userMessage}`;
-        
-        const assistantResponse = document.createElement('div');
-        assistantResponse.className = 'assistant-response';
-        assistantResponse.textContent = `AI: ${entry.assistantResponse}`;
-        
-        item.appendChild(userMessage);
-        item.appendChild(assistantResponse);
-        container.appendChild(item);
-      });
+      const historyContainer = document.getElementById('conversation-history');
+      historyContainer.innerHTML = conversationHistory
+        .map(item => `
+          <div class="conversation-item">
+            <div class="user-message">${item.userMessage}</div>
+            <div class="assistant-response">${item.assistantResponse}</div>
+          </div>
+        `)
+        .join('');
+
+      // 最新のメッセージが表示されるようにスクロール
+      historyContainer.scrollTop = historyContainer.scrollHeight;
     }
 
     function toggleSettings() {
@@ -733,82 +739,117 @@
     // VTubeStudioへの接続を確立
     async function connectToVTS() {
       const port = document.getElementById('vtsPort').value || '8001';
-      const ws = new WebSocket(`ws://localhost:${port}`);
-      
-      ws.onopen = () => {
-        console.log('VTubeStudio WebSocketに接続しました');
-        // 認証プロセスを開始
-        authenticateWithVTS();
-      };
-      
-      ws.onclose = () => {
-        console.log('VTubeStudio WebSocket接続が切断されました');
-        vtsAuthenticated = false;
-      };
-      
-      ws.onerror = (error) => {
-        console.error('VTubeStudio WebSocketエラー:', error);
+      try {
+        if (vtsWebSocket) {
+          vtsWebSocket.close();
+        }
+        vtsWebSocket = new WebSocket(`ws://localhost:${port}`);
+        
+        vtsWebSocket.onopen = () => {
+          console.log('VTubeStudio WebSocketに接続しました');
+          updateVTSStatus();
+          // 認証プロセスを開始
+          authenticateWithVTS();
+        };
+        
+        vtsWebSocket.onclose = () => {
+          console.log('VTubeStudio WebSocket接続が切断されました');
+          vtsAuthenticated = false;
+          updateVTSStatus();
+        };
+        
+        vtsWebSocket.onerror = (error) => {
+          console.error('VTubeStudio WebSocketエラー:', error);
+          showError('VTubeStudioとの接続に失敗しました');
+          updateVTSStatus();
+        };
+        
+        vtsWebSocket.onmessage = handleVTSMessage;
+      } catch (error) {
+        console.error('VTubeStudio接続エラー:', error);
         showError('VTubeStudioとの接続に失敗しました');
+        vtsWebSocket = null;
+        updateVTSStatus();
+      }
+    }
+
+    // VTSに認証トークンをリクエスト
+    function authenticateWithVTS() {
+      const authRequest = {
+        apiName: "VTubeStudioPublicAPI",
+        apiVersion: "1.0",
+        requestID: "12345",
+        messageType: "AuthenticationTokenRequest",
+        data: {
+          pluginName: "AITuber",
+          pluginDeveloper: "Codeium",
+          pluginIcon: ""
+        }
       };
       
-      ws.onmessage = handleVTSMessage;
+      console.log('認証リクエスト送信:', authRequest);
+      vtsWebSocket.send(JSON.stringify(authRequest));
+    }
+
+    // 保存されたトークンで認証
+    function sendVTSAuthRequest(token) {
+      const authRequest = {
+        apiName: "VTubeStudioPublicAPI",
+        apiVersion: "1.0",
+        requestID: "12345",
+        messageType: "AuthenticationRequest",
+        data: {
+          pluginName: "AITuber",
+          pluginDeveloper: "Codeium",
+          authenticationToken: token
+        }
+      };
+      
+      console.log('認証トークン送信:', authRequest);
+      vtsWebSocket.send(JSON.stringify(authRequest));
     }
 
     // VTSからのメッセージを処理
-    async function handleVTSMessage(event) {
+    function handleVTSMessage(event) {
       try {
-        const response = JSON.parse(event.data);
-        console.log('VTS Response:', response);
+        const message = JSON.parse(event.data);
+        console.log('VTS応答受信:', message);
         
-        if (response.messageType === 'APIError') {
-          console.error('VTS APIエラー:', {
-            message: response.data?.message,
-            code: response.data?.errorID,
-            details: response.data
-          });
-          return;
-        }
-        
-        if (response.messageType === 'AuthenticationTokenResponse') {
-          const token = response.data.authenticationToken;
-          localStorage.setItem('vtsAuthToken', token);
+        if (message.messageType === 'AuthenticationTokenResponse') {
+          // 認証トークンを保存
+          const token = message.data.authenticationToken;
+          console.log('認証トークン受信:', token);
+          localStorage.setItem('vtsAuthenticationToken', token);
           sendVTSAuthRequest(token);
-        }
-        else if (response.messageType === 'AuthenticationResponse') {
-          vtsAuthenticated = response.data.authenticated;
-          if (vtsAuthenticated) {
-            console.log('VTubeStudioの認証に成功しました');
-            setTimeout(requestModelList, 1000);
+        
+        } else if (message.messageType === 'AuthenticationResponse') {
+          if (message.data.authenticated) {
+            console.log('VTubeStudio認証成功');
+            vtsAuthenticated = true;
+            updateVTSStatus();
+            requestModelList();
+          } else {
+            console.log('VTubeStudio認証失敗');
+            showError('VTubeStudioの認証に失敗しました');
+            vtsAuthenticated = false;
+            updateVTSStatus();
           }
-        }
-        else if (response.messageType === 'AvailableModelsResponse') {
-          console.log('利用可能なモデル:', response.data.availableModels);
+        } else if (message.messageType === 'AvailableModelsResponse') {
+          console.log('利用可能なモデル:', message.data.availableModels);
           
-          const currentModel = response.data.availableModels.find(model => model.modelLoaded);
+          const currentModel = message.data.availableModels.find(model => model.modelLoaded);
           if (currentModel) {
-            console.log('現在ロードされているモデル:', currentModel);
-            const request = {
-              apiName: "VTubeStudioPublicAPI",
-              apiVersion: "1.0",
-              requestID: "parameter-list",
-              messageType: "InputParameterListRequest",
-              data: {
-                modelID: currentModel.modelID
-              }
-            };
-            vtsWebSocket.send(JSON.stringify(request));
+            console.log('現在のモデル:', currentModel);
+            requestModelParameters(currentModel.modelID);
           }
-        }
-        else if (response.messageType === 'InputParameterListResponse') {
-          console.log('パラメータリストのレスポンス:', response);
-          console.log('パラメータリスト:', response.data);
-          console.log('パラメータリスト:', response.data.defaultParameters);
+        } else if (message.messageType === 'InputParameterListResponse') {
+          console.log('パラメータ一覧を受信:', message.data);
           
-          if (response.data && response.data.defaultParameters) {
-            const parameters = response.data.defaultParameters;
+          if (message.data && message.data.defaultParameters) {
+            const parameters = message.data.defaultParameters;
             console.log('すべてのパラメータ名:', parameters.map(p => p.name));
             
-            // 口の開きに関連するパラメータを取得
+            // 口の開きに関連するパラメータを検索
             const mouthParams = parameters
               .filter(param => {
                 const name = param.name.toLowerCase();
@@ -835,21 +876,19 @@
               })
               .map(param => param.name);
             
-            // パラメータが見つからない場合は警告を表示
             if (mouthParams.length === 0) {
-              console.warn('口の開閉に関連するパラメータが見つかりませんでした。以下の全パラメータ名を確認してください:');
-              console.warn(parameters.map(p => p.name));
+              console.warn('口の開閉に関連するパラメータが見つかりませんでした。全パラメータ:', parameters.map(p => p.name));
             } else {
               console.log('使用する口パラメータ:', mouthParams);
             }
             
+            // グローバル変数に保存
             window.vtsParameters = parameters;
-          } else {
-            console.warn('パラメータが見つかりません:', response);
           }
         }
       } catch (error) {
-        console.error('VTSメッセージ処理エラー:', error);
+        console.error('メッセージ処理エラー:', error);
+        showError('VTubeStudioからのメッセージ処理に失敗しました');
       }
     }
 
@@ -861,44 +900,53 @@
         requestID: "model-list",
         messageType: "AvailableModelsRequest"
       };
+      console.log('モデル一覧リクエスト送信');
       vtsWebSocket.send(JSON.stringify(request));
     }
 
-    // VTSに認証トークンをリクエスト
-    function authenticateWithVTS() {
-      const savedToken = localStorage.getItem('vtsAuthToken');
+    // モデルのパラメータを取得
+    function requestModelParameters(modelID) {
+      const request = {
+        apiName: "VTubeStudioPublicAPI",
+        apiVersion: "1.0",
+        requestID: "parameter-list",
+        messageType: "InputParameterListRequest",
+        data: {
+          modelID: modelID
+        }
+      };
+      console.log('パラメータ一覧リクエスト送信:', modelID);
+      vtsWebSocket.send(JSON.stringify(request));
+    }
+
+    // VTSの接続状態を表示
+    function updateVTSStatus() {
+      const statusElement = document.getElementById('vtsStatus');
+      const connectButton = document.getElementById('vtsConnectButton');
       
-      if (savedToken) {
-        sendVTSAuthRequest(savedToken);
+      if (vtsWebSocket && vtsWebSocket.readyState === WebSocket.OPEN) {
+        statusElement.textContent = vtsAuthenticated ? '接続済み' : '認証中...';
+        statusElement.className = 'status-text connected';
+        connectButton.textContent = '切断する';
       } else {
-        const tokenRequest = {
-          apiName: "VTubeStudioPublicAPI",
-          apiVersion: "1.0",
-          requestID: "token-request",
-          messageType: "AuthenticationTokenRequest",
-          data: {
-            pluginName: "AITuber Sample App",
-            pluginDeveloper: "Developer"
-          }
-        };
-        vtsWebSocket.send(JSON.stringify(tokenRequest));
+        statusElement.textContent = '未接続';
+        statusElement.className = 'status-text disconnected';
+        connectButton.textContent = '接続する';
       }
     }
 
-    // 保存されたトークンで認証
-    function sendVTSAuthRequest(token) {
-      const authRequest = {
-        apiName: "VTubeStudioPublicAPI",
-        apiVersion: "1.0",
-        requestID: "auth-request",
-        messageType: "AuthenticationRequest",
-        data: {
-          pluginName: "AITuber Sample App",
-          pluginDeveloper: "Developer",
-          authenticationToken: token
-        }
-      };
-      vtsWebSocket.send(JSON.stringify(authRequest));
+    // VTSとの接続を切り替える
+    async function toggleVTSConnection() {
+      if (vtsWebSocket && vtsWebSocket.readyState === WebSocket.OPEN) {
+        // 接続を切断
+        vtsWebSocket.close();
+        vtsWebSocket = null;
+        vtsAuthenticated = false;
+      } else {
+        // 新しい接続を確立
+        await connectToVTS();
+      }
+      updateVTSStatus();
     }
 
     // 音声生成とリップシンク制御を行う関数
