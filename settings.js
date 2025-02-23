@@ -27,6 +27,9 @@ const DEFAULT_SETTINGS = {
   VOICEVOX_ENDPOINT: 'http://localhost:50021',
   VOICEVOX_SPEAKER: 2,
 
+  // VTubeStudio設定
+  VTS_PORT: 8001, // VTubeStudioのプラグインAPIポート番号
+
   // 会話履歴の設定を追加
   CONVERSATION_HISTORY_SIZE: 10, // 保持する会話の数（0-100）
 };

@@ -252,6 +252,14 @@
       </div>
 
       <div class="settings-group">
+        <h3>VTubeStudio設定</h3>
+        <div class="setting-item">
+          <label for="vtsPort">ポート番号:</label>
+          <input type="number" id="vtsPort" min="1" max="65535">
+        </div>
+      </div>
+
+      <div class="settings-group">
         <h3>会話履歴設定</h3>
         <div class="setting-item">
           <label for="conversationHistorySize">保持する会話数:</label>
@@ -289,7 +297,7 @@
     // VTubeStudio WebSocket接続の管理
     let vtsWebSocket = null;
     let vtsAuthenticated = false;
-    const VTS_WEBSOCKET_URL = 'ws://localhost:8001';
+    const VTS_WEBSOCKET_URL = 'ws://localhost:';
 
     // 初期値を設定
     function initializeSettings() {
@@ -303,6 +311,7 @@
       document.getElementById('voicevoxEndpoint').value = DEFAULT_SETTINGS.VOICEVOX_ENDPOINT;
       document.getElementById('voicevoxSpeaker').value = DEFAULT_SETTINGS.VOICEVOX_SPEAKER;
       document.getElementById('conversationHistorySize').value = DEFAULT_SETTINGS.CONVERSATION_HISTORY_SIZE;
+      document.getElementById('vtsPort').value = DEFAULT_SETTINGS.VTS_PORT || '8001';
     }
 
     // DOMContentLoadedイベントで初期化を行う
@@ -364,7 +373,8 @@
         SYSTEM_PROMPT: document.getElementById('systemPrompt').value,
         COMMENT_SELECTION_PROMPT: document.getElementById('commentSelectionPrompt').value,
         MESSAGE_LIFETIME: DEFAULT_SETTINGS.MESSAGE_LIFETIME,
-        CONVERSATION_HISTORY_SIZE: parseInt(document.getElementById('conversationHistorySize').value)
+        CONVERSATION_HISTORY_SIZE: parseInt(document.getElementById('conversationHistorySize').value),
+        VTS_PORT: document.getElementById('vtsPort').value
       };
     }
 
@@ -722,30 +732,26 @@
 
     // VTubeStudioへの接続を確立
     async function connectToVTS() {
-      try {
-        vtsWebSocket = new WebSocket(VTS_WEBSOCKET_URL);
-        
-        vtsWebSocket.onopen = () => {
-          console.log('VTubeStudio WebSocketに接続しました');
-          // 認証プロセスを開始
-          authenticateWithVTS();
-        };
-        
-        vtsWebSocket.onclose = () => {
-          console.log('VTubeStudio WebSocket接続が切断されました');
-          vtsAuthenticated = false;
-        };
-        
-        vtsWebSocket.onerror = (error) => {
-          console.error('VTubeStudio WebSocketエラー:', error);
-          showError('VTubeStudioとの接続に失敗しました');
-        };
-        
-        vtsWebSocket.onmessage = handleVTSMessage;
-      } catch (error) {
-        console.error('VTubeStudio接続エラー:', error);
+      const port = document.getElementById('vtsPort').value || '8001';
+      const ws = new WebSocket(`ws://localhost:${port}`);
+      
+      ws.onopen = () => {
+        console.log('VTubeStudio WebSocketに接続しました');
+        // 認証プロセスを開始
+        authenticateWithVTS();
+      };
+      
+      ws.onclose = () => {
+        console.log('VTubeStudio WebSocket接続が切断されました');
+        vtsAuthenticated = false;
+      };
+      
+      ws.onerror = (error) => {
+        console.error('VTubeStudio WebSocketエラー:', error);
         showError('VTubeStudioとの接続に失敗しました');
-      }
+      };
+      
+      ws.onmessage = handleVTSMessage;
     }
 
     // VTSからのメッセージを処理

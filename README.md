@@ -68,6 +68,9 @@ sequenceDiagram
 - **エンドポイント**: VOICEVOXのAPIエンドポイント（デフォルト: http://localhost:50021 ）
 - **話者ID**: 使用する話者のID
 
+### VTubeStudio設定
+- **ポート番号**: VTubeStudioのプラグインAPIポート番号（デフォルト: 8001）
+
 ### 会話履歴設定
 - **保持する会話数**: 表示・記憶する会話履歴の数（0-100）
 
@@ -93,8 +96,9 @@ sequenceDiagram
    ```bash
    1. VTubeStudioを起動
    2. 一般設定を開く
-   3. 「VTuberStudio Plugins」でポート番号が8001であることを確認
-   4. 「APIの起動」をオン
+   3. 「VTuberStudio Plugins」でポート番号を確認（デフォルト: 8001）
+   4. 必要に応じてポート番号を変更し、アプリケーション側の設定も更新
+   5. 「APIの起動」をオン
    ```
 3. ローカルサーバーを起動します
    ```bash
@@ -131,6 +135,6 @@ const DEFAULT_SETTINGS = {
   COMMENT_SELECTION_PROMPT: '...',
   VOICEVOX_ENDPOINT: 'http://localhost:50021',
   VOICEVOX_SPEAKER: 1,
+  VTS_PORT: 8001,
   CONVERSATION_HISTORY_SIZE: 10
 }
-```
