@@ -1,4 +1,10 @@
-# AITuberのつくりかた サンプルアプリ
+# AITuberの作り方 サンプルアプリ
+
+### デモ動画
+[![YouTube - AITuberの作り方](https://img.youtube.com/vi/LIYuXlXhllQ/0.jpg)](https://www.youtube.com/watch?v=LIYuXlXhllQ)
+
+### 解説記事
+[note - ゼロから始めるAITuberの作り方](https://note.com/nike_cha_n/n/n6cac5ad7bc9d)
 
 このアプリケーションは、YouTubeのライブ配信チャットに自動で返信するAIチャットボットのサンプル実装です。OpenAIのGPTモデルを使用して返答を生成し、VOICEVOXを使用して音声合成を行い、VTubeStudioと連携してLive2Dモデルのリップシンクを制御します。
 
@@ -140,3 +146,4 @@ const DEFAULT_SETTINGS = {
   VTS_PORT: 8001,
   CONVERSATION_HISTORY_SIZE: 10
 }
+```
